@@ -3,29 +3,56 @@ package main
 import (
 	"bytes"
 	"fmt"
+  "io"
 	"net/http"
 	"os"
+  "encoding/json"
 )
 
 const (
-  url = "https://api.cloudvps.reg.ru/v1/reglets/"
+  url = "https://api.cloudvps.reg.ru/v1/reglets"
+  token = ""
 )
 
 
+type body struct {
+  reglets []reglet `json:"reglets"`
+}
+type reglet struct {
+  id string `json:"id"`
+  name string `json:"name"`
+  status string `json:"status"`
+}
+func call(url, method string) error {
+  req, err := http.NewRequest(method, url, nil)
+  if err != nil {
+      return fmt.Errorf("Got error %s", err.Error())
+  }
+  req.Header.Set("Content-Type", "application/json")
+  req.Header.Set("Authorization", "Bearer " + token)
+  response, err := http.DefaultClient.Do(req)
+  if err != nil {
+      return fmt.Errorf("Got error %s", err.Error())
+  }
+  defer response.Body.Close()
+
+  if response.StatusCode == http.StatusOK {
+    bodyBytes, err := io.ReadAll(response.Body)
+    if err != nil {
+        fmt.Println(err)
+    }
+    bodyString := string(bodyBytes)
+
+    var target body
+    _ = json.Unmarshal([]byte(bodyString), &target)
+    //json.Unmarshal(bodyBytes, &target)
+    fmt.Println(target)
+  }
+  return nil
+}
 //Получение id ВМ
 func getVMId(name, token string) string {
-  req, err := http.NewRequest("GET", url)
-  if err != nil {
-    panic(err)
-  }
-  req.Header.Set("Authorization", "Bearer " + token)
-  req.Header.Set("Content-Type", "application/json")
-  client := &http.Client{}
-  res, err := client.Do(req)
-  if err != nil {
-    panic(err)
-  }
-  defer res.Body.Close()
+  call(url, "GET")
   ///Здесь парсить ответ, возвращать id по имени
   // пример ответа:
   /* "reglets": [
@@ -119,11 +146,14 @@ func execActionsReq(cur_url, token string, body []byte) *http.Response {
 
 
 func main() {
-  token := os.Getenv("TOKEN") //Получаем токен
+  //token := os.Getenv("TOKEN") //Получаем токен
   name := os.Args[1] //Имя машины
-  id := getVMId(name)
+  if name == "" {
+    panic("Не указано имя ВМ")
+  }
+  id := getVMId(name, token)
   if id == "" {
-    panic("Undefined")
+    panic("Не найдена ВМ")
   }
   arg := os.Args[2] // Операция
 
