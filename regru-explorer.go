@@ -1,118 +1,78 @@
 package main
-
+// ИМЯ_КОНТЕЙНЕРА команда (start, stop)
+// Пример вызова: regru-explorer BUILDER start 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
-  "io"
+	"io/ioutil"
 	"net/http"
 	"os"
-  "encoding/json"
+	"strconv"
+  "time"
 )
 
 const (
   url = "https://api.cloudvps.reg.ru/v1/reglets"
   token = ""
+  maxAwait = 80 //Максимальное время ожидания подтверждения операции в секундах
+  stepToNewRequest = 4 // Шаг для повторных запросов сверки статуса при подтверждении операции в секундах
 )
 
+type Reglet struct {
+  Id int `json:"id"`
+  Name string `json:"name"`
+  Status string `json:"status"`
+}
+type Body struct {
+  Reglets []Reglet `json:"reglets"`
+  Reglet Reglet `json:"reglet`
+}
 
-type body struct {
-  reglets []reglet `json:"reglets"`
-}
-type reglet struct {
-  id string `json:"id"`
-  name string `json:"name"`
-  status string `json:"status"`
-}
-func call(url, method string) error {
-  req, err := http.NewRequest(method, url, nil)
+func call(url, token string) (Body, error) {
+  req, err := http.NewRequest("GET", url, nil)
   if err != nil {
-      return fmt.Errorf("Got error %s", err.Error())
+      return Body{}, err
   }
   req.Header.Set("Content-Type", "application/json")
   req.Header.Set("Authorization", "Bearer " + token)
   response, err := http.DefaultClient.Do(req)
   if err != nil {
-      return fmt.Errorf("Got error %s", err.Error())
+      return Body{}, err
   }
   defer response.Body.Close()
 
   if response.StatusCode == http.StatusOK {
-    bodyBytes, err := io.ReadAll(response.Body)
+    bodyBytes, err := ioutil.ReadAll(response.Body)
     if err != nil {
-        fmt.Println(err)
+      return Body{}, err
     }
-    bodyString := string(bodyBytes)
-
-    var target body
-    _ = json.Unmarshal([]byte(bodyString), &target)
-    //json.Unmarshal(bodyBytes, &target)
-    fmt.Println(target)
+    /*bodyString := string(bodyBytes)
+    fmt.Println(bodyString)*/
+    var target Body
+    _ = json.Unmarshal(bodyBytes, &target)
+    return target, nil
   }
-  return nil
+  fmt.Println("Ошибка. Статус ответа.")
+  return Body{}, nil
 }
 //Получение id ВМ
 func getVMId(name, token string) string {
-  call(url, "GET")
-  ///Здесь парсить ответ, возвращать id по имени
-  // пример ответа:
-  /* "reglets": [
-    {
-      "backups_enabled": false,
-      "billed_until": "2023-02-19 12:43:12",
-      "created_at": "2023-02-18 07:02:54",
-      "disk": 80,
-      "disk_usage": 0.0,
-      "external_application": null,
-      "hostname": "95-163-236-226.cloudvps.regruhosting.ru",
-      "id": 2623965,
-      "image": {
-        "created_at": "2020-04-07 11:29:07",
-        "distribution": "ubuntu-20.04",
-        "id": 306495,
-        "min_disk_size": "5",
-        "name": "Ubuntu 20.04 LTS",
-        "private": false,
-        "region_slug": "msk1",
-        "size_gigabytes": "2.4",
-        "slug": "ubuntu-20-04-amd64",
-        "type": "distribution"
-      },
-      "image_id": 306495,
-      "ip": "95.163.236.226",
-      "ipv6": "2a00:f940:2:4:2::5808",
-      "last_backup_date": null,
-      "locked": 0,
-      "memory": 4096,
-      "name": "GITLAB",
-      "ptr": "95-163-236-226.cloudvps.regruhosting.ru",
-      "region_slug": "msk1",
-      "service_id": 68156613,
-      "size": {
-        "archived": 0,
-        "disk": 80,
-        "id": 1123,
-        "memory": 4096,
-        "name": "Base-4",
-        "price": "2.6",
-        "price_month": 1750,
-        "slug": "base-4",
-        "unit": "hour",
-        "vcpus": 4,
-        "weight": 40
-      },
-      "size_slug": "base-4",
-      "status": "off",
-      "sub_status": null,
-      "vcpus": 4,
-      "vpcs": []
-    },
-*/
+  reglets, err := call(url, token)
+  if err != nil || len(reglets.Reglets) < 1 {
+    panic("Ошибка запроса")
+  }
+  for _, reglet := range reglets.Reglets {
+    if reglet.Name == name {
+      return strconv.Itoa(reglet.Id)
+    }
+  }
   return ""
 }
 
 // Запуск ВМ
 func startVM(id, token string) *http.Response {
-  cur_url := url + id + "/actions"
+  cur_url := url + "/" + id + "/actions"
   body := []byte(`{
     "type" : "start"
   }`)
@@ -121,7 +81,7 @@ func startVM(id, token string) *http.Response {
 
 // Остановка ВМ
 func stopVM(id, token string) *http.Response {
-  cur_url := url + id + "/actions"
+  cur_url := url + "/" + id + "/actions"
   body := []byte(`{
     "type" : "stop"
   }`)
@@ -144,9 +104,36 @@ func execActionsReq(cur_url, token string, body []byte) *http.Response {
   return res
 }
 
+func awaitStatusChange(id, token, status string) bool {
+  timeFromStart := 0
+	for range time.Tick(time.Second * stepToNewRequest) {
+		// do the interval task
+    cur_status := getStatusVM(id, token)
+    if cur_status == status {
+      fmt.Println("Готово!")
+      return true
+    }
+    timeFromStart += stepToNewRequest
+    if timeFromStart >= maxAwait {
+      fmt.Println("Превышено время ожидания при подтверждения операции!")
+      return false
+    }
+  }
+  fmt.Println("Ошибка при ожидании подтверждения операции!")
+  return false
+}
+
+func getStatusVM(id, token string) string {
+  cur_url := url + "/" + id
+  body,_ := call(cur_url, token)
+  return body.Reglet.Status
+}
 
 func main() {
   //token := os.Getenv("TOKEN") //Получаем токен
+  if len(os.Args) < 2 {
+    panic("Не указано имя ВМ")
+  }
   name := os.Args[1] //Имя машины
   if name == "" {
     panic("Не указано имя ВМ")
@@ -155,14 +142,23 @@ func main() {
   if id == "" {
     panic("Не найдена ВМ")
   }
+  fmt.Println("ID-сервера -- ", id)
+
+  if len(os.Args) < 3 {
+    panic("Не указана команда ВМ")
+  }
   arg := os.Args[2] // Операция
 
   switch arg {
     case "start":
       fmt.Println("Запуск контейнера")
       startVM(id, token)
+      awaitStatusChange(id, token, "active")
+      return 
     case "stop":
-      fmt.Println("Запуск контейнера")
+      fmt.Println("Остановка контейнера")
       stopVM(id, token)
+      awaitStatusChange(id, token, "off")
+      return 
   }
 }
